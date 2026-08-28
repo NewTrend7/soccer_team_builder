@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>サッカー チームビルダー</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.26.3/babel.min.js"></script>
+<style>
+  html, body { margin: 0; padding: 0; background: #F7F5EF; }
+  #root { max-width: 980px; margin: 0 auto; }
+</style>
+</head>
+<body>
+<div id="root">
+  <p style="padding:60px 20px;text-align:center;color:#888;font-family:sans-serif;">
+    読み込み中…この画面のまま変わらない場合は、インターネット接続を確認してページを再読み込みしてください。
+  </p>
+</div>
+<script>
+  window.addEventListener('error', function (e) {
+    var root = document.getElementById('root');
+    if (root && !root.dataset.mounted) {
+      root.innerHTML = '<p style="padding:60px 20px;text-align:center;color:#c0392b;font-family:sans-serif;">読み込みに失敗しました。インターネット接続を確認し、ページを再読み込みしてください。<br><br>(詳細: ' + (e.message || 'unknown error') + ')</p>';
+    }
+  });
+</script>
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo } = React;
+
+const POSITIONS = [
+  { key: "GK", label: "GK", full: "ゴールキーパー" },
+  { key: "DF", label: "DF", full: "ディフェンダー" },
+  { key: "MF", label: "MF", full: "ミッドフィルダー" },
+  { key: "FW", label: "FW", full: "フォワード" },
+];
+const POS_ORDER = ["GK", "DF", "MF", "FW"];
+const POS_COLOR = { GK: "#D9A441", DF: "#1D3557", MF: "#2E7D5B", FW: "#E4572E" };
+const ROW_ORDER = ["FW", "MF", "DF", "GK"];
+
+const FORMATIONS = {
+  7: [
+    { key: "2-3-1", df: 2, mf: 3, fw: 1 },
+    { key: "3-2-1", df: 3, mf: 2, fw: 1 },
+    { key: "2-2-2", df: 2, mf: 2, fw: 2 },
+    { key: "3-1-2", df: 3, mf: 1, fw: 2 },
+  ],
+  8: [
+    { key: "3-3-1", df: 3, mf: 3, fw: 1 },
+    { key: "2-3-2", df: 2, mf: 3, fw: 2 },
+    { key: "3-2-2", df: 3, mf: 2, fw: 2 },
+    { key: "2-4-1", df: 2, mf: 4, fw: 1 },
+  ],
+  9: [
+    { key: "3-3-2", df: 3, mf: 3, fw: 2 },
+    { key: "3-2-3", df: 3, mf: 2, fw: 3 },
+    { key: "4-3-1", df: 4, mf: 3, fw: 1 },
+    { key: "2-3-3", df: 2, mf: 3, fw: 3 },
+  ],
+  11: [
+    { key: "4-4-2", df: 4, mf: 4, fw: 2 },
+    { key: "4-3-3", df: 4, mf: 3, fw: 3 },
+    { key: "4-2-3-1", df: 4, mf: 5, fw: 1 },
+    { key: "3-5-2", df: 3, mf: 5, fw: 2 },
+    { key: "3-4-3", df: 3, mf: 4, fw: 3 },
+    { key: "5-3-2", df: 5, mf: 3, fw: 2 },
+  ],
+};
+const TEAM_SIZES = [7, 8, 9, 11];
+const STORAGE_KEY = "soccer-team-builder-data";
+const SKILL_LABELS = { 1: "育成中", 2: "標準", 3: "得意", 4: "上級", 5: "エース" };
+
+function uid() { return Math.random().toString(36).slice(2, 10); }
+function shuffle(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+function assignToBuckets(pool, formation) {
+  const target = { GK: 2, DF: formation.df * 2, MF: formation.mf * 2, FW: formation.fw * 2 };
+  const remaining = { ...target };
+  const buckets = { GK: [], DF: [], MF: [], FW: [] };
+  const withElig = pool.map((p) => ({ player: p, elig: POS_ORDER.filter((k) => p.positions.includes(k)) }));
+  const ordered = shuffle(withElig).sort((a, b) => a.elig.length - b.elig.length);
+  const fallbackOrder = ["DF", "MF", "FW", "GK"];
+  ordered.forEach(({ player, elig }) => {
+    let chosen = POS_ORDER.find((k) => elig.includes(k) && remaining[k] > 0);
+    if (!chosen) chosen = fallbackOrder.find((k) => remaining[k] > 0);
+    if (!chosen) chosen = POS_ORDER.find((k) => remaining[k] > 0);
+    remaining[chosen] -= 1;
+    buckets[chosen].push(player);
+  });
+  return buckets;
+}
+
+function splitBucket(bucket, perTeam) {
+  const sorted = [...shuffle(bucket)].sort((a, b) => b.skill - a.skill);
+  const teamA = [], teamB = [];
+  let skillA = 0, skillB = 0;
+  sorted.forEach((p) => {
+    const aFull = teamA.length >= perTeam;
+    const bFull = teamB.length >= perTeam;
+    if (!aFull && (bFull || skillA <= skillB)) { teamA.push(p); skillA += p.skill; }
+    else { teamB.push(p); skillB += p.skill; }
+  });
+  return { teamA, teamB };
+}
+
+function buildTeams(pool, formation) {
+  const buckets = assignToBuckets(pool, formation);
+  const perTeam = { GK: 1, DF: formation.df, MF: formation.mf, FW: formation.fw };
+  const teamA = { GK: [], DF: [], MF: [], FW: [] };
+  const teamB = { GK: [], DF: [], MF: [], FW: [] };
+  POS_ORDER.forEach((pos) => {
+    const { teamA: a, teamB: b } = splitBucket(buckets[pos], perTeam[pos]);
+    teamA[pos] = a; teamB[pos] = b;
+  });
+  return { teamA, teamB };
+}
+
+function generateSchedule(players, sessionCount, teamSize, formation) {
+  const capacity = Math.min(teamSize * 2, players.length);
+  const appearances = Object.fromEntries(players.map((p) => [p.id, 0]));
+  const sessions = [];
+  for (let s = 0; s < sessionCount; s++) {
+    const pool = shuffle(players).sort((a, b) => appearances[a.id] - appearances[b.id]);
+    const playing = pool.slice(0, capacity);
+    const bench = pool.slice(capacity);
+    playing.forEach((p) => (appearances[p.id] += 1));
+    const { teamA, teamB } = buildTeams(playing, formation);
+    sessions.push({ index: s, teamA, teamB, bench });
+  }
+  return { sessions, appearances };
+}
+
+function flat(teamRows) { return ROW_ORDER.flatMap((r) => teamRows[r]); }
+function avgSkill(teamRows) {
+  const all = flat(teamRows);
+  if (!all.length) return 0;
+  return all.reduce((s, p) => s + p.skill, 0) / all.length;
+}
+
+function loadData() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch (e) { return null; }
+}
+function saveData(data) {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); return true; }
+  catch (e) { return false; }
+}
+
+function TeamBuilder() {
+  const [players, setPlayers] = useState([]);
+  const [tab, setTab] = useState("roster");
+  const [ready, setReady] = useState(false);
+  const [saveNote, setSaveNote] = useState("");
+
+  const [name, setName] = useState("");
+  const [posSel, setPosSel] = useState([]);
+  const [skill, setSkill] = useState(3);
+  const [editingId, setEditingId] = useState(null);
+
+  const [sessionCount, setSessionCount] = useState(3);
+  const [sessionMinutes, setSessionMinutes] = useState(30);
+  const [teamSize, setTeamSize] = useState(11);
+  const [formationKey, setFormationKey] = useState("4-4-2");
+
+  const [schedule, setSchedule] = useState(null);
+  const [activeSession, setActiveSession] = useState(0);
+
+  useEffect(() => {
+    const data = loadData();
+    if (data) {
+      if (data.players) setPlayers(data.players);
+      if (data.config) {
+        setSessionCount(data.config.sessionCount ?? 3);
+        setSessionMinutes(data.config.sessionMinutes ?? 30);
+        setTeamSize(data.config.teamSize ?? 11);
+        setFormationKey(data.config.formationKey ?? "4-4-2");
+      }
+    }
+    setReady(true);
+  }, []);
+
+  useEffect(() => {
+    if (!ready) return;
+    const t = setTimeout(() => {
+      const ok = saveData({ players, config: { sessionCount, sessionMinutes, teamSize, formationKey } });
+      setSaveNote(ok ? "保存済み" : "保存に失敗しました");
+      setTimeout(() => setSaveNote(""), 1500);
+    }, 400);
+    return () => clearTimeout(t);
+  }, [players, sessionCount, sessionMinutes, teamSize, formationKey, ready]);
+
+  const formationList = FORMATIONS[teamSize] || [];
+  const formation = formationList.find((f) => f.key === formationKey) || formationList[0];
+
+  useEffect(() => {
+    const list = FORMATIONS[teamSize] || [];
+    if (!list.find((f) => f.key === formationKey)) setFormationKey(list[0]?.key ?? "");
+  }, [teamSize]);
+
+  const capacity = teamSize * 2;
+  const shortage = players.length < capacity;
+  const derivedAvg = useMemo(() => {
+    if (!players.length) return 0;
+    return (capacity * sessionCount) / players.length;
+  }, [capacity, sessionCount, players.length]);
+
+  function resetForm() { setName(""); setPosSel([]); setSkill(3); setEditingId(null); }
+  function togglePos(k) { setPosSel((prev) => (prev.includes(k) ? prev.filter((x) => x !== k) : [...prev, k])); }
+  function submitPlayer(e) {
+    e.preventDefault();
+    if (!name.trim() || posSel.length === 0) return;
+    if (editingId) {
+      setPlayers((prev) => prev.map((p) => (p.id === editingId ? { ...p, name: name.trim(), positions: posSel, skill } : p)));
+    } else {
+      setPlayers((prev) => [...prev, { id: uid(), name: name.trim(), positions: posSel, skill }]);
+    }
+    resetForm();
+  }
+  function editPlayer(p) { setEditingId(p.id); setName(p.name); setPosSel(p.positions); setSkill(p.skill); }
+  function deletePlayer(id) { setPlayers((prev) => prev.filter((p) => p.id !== id)); setSchedule(null); }
+  function handleGenerate() {
+    if (players.length < 2 || !formation) return;
+    const result = generateSchedule(players, sessionCount, teamSize, formation);
+    setSchedule(result);
+    setActiveSession(0);
+  }
+
+  if (!ready) {
+    return <div style={styles.loadingWrap}>読み込み中…</div>;
+  }
+
+  return (
+    <div style={styles.page}>
+      <style>{`
+        * { box-sizing: border-box; }
+        body { font-family: 'Inter', system-ui, sans-serif; }
+        .tb-scroll::-webkit-scrollbar { height: 6px; }
+        .tb-scroll::-webkit-scrollbar-thumb { background: #ffffff33; border-radius: 3px; }
+        input:focus, select:focus, button:focus-visible { outline: 2px solid #D9A441; outline-offset: 1px; }
+        button { font-family: inherit; cursor: pointer; }
+        .tb-two-col { display: grid; grid-template-columns: minmax(260px, 360px) 1fr; gap: 14px; }
+        .tb-pitch-wrap { display: grid; grid-template-columns: 1fr auto 1fr; gap: 10px; align-items: stretch; }
+        @media (max-width: 640px) {
+          .tb-two-col { grid-template-columns: 1fr; }
+          .tb-pitch-wrap { grid-template-columns: 1fr; }
+          .tb-vs-center { transform: rotate(90deg); margin: 4px auto; }
+        }
+      `}</style>
+
+      <header style={styles.header}>
+        <div style={styles.headerInner}>
+          <div style={styles.brandRow}>
+            <div style={styles.brandBadge}>⚽</div>
+            <div>
+              <div style={styles.brandTitle}>TEAM BUILDER</div>
+              <div style={styles.brandSub}>ポジション×実力×フォーメーション編成</div>
+            </div>
+          </div>
+          <div style={styles.saveNote}>{saveNote}</div>
+        </div>
+        <nav style={styles.tabRow}>
+          <button onClick={() => setTab("roster")} style={{ ...styles.tabBtn, ...(tab === "roster" ? styles.tabBtnActive : {}) }}>
+            👥 選手名簿 ({players.length})
+          </button>
+          <button onClick={() => setTab("setup")} style={{ ...styles.tabBtn, ...(tab === "setup" ? styles.tabBtnActive : {}) }}>
+            ⚙️ 試合設定・編成
+          </button>
+        </nav>
+      </header>
+
+      <main style={styles.main}>
+        {tab === "roster" && (
+          <div className="tb-two-col">
+            <section style={styles.card}>
+              <h2 style={styles.cardTitle}>{editingId ? "選手を編集" : "選手を追加"}</h2>
+              <form onSubmit={submitPlayer} style={styles.form}>
+                <label style={styles.label}>
+                  名前
+                  <input style={styles.input} value={name} onChange={(e) => setName(e.target.value)} placeholder="例）田中 太郎" />
+                </label>
+                <div style={styles.label}>
+                  ポジション（複数選択可）
+                  <div style={styles.chipRow}>
+                    {POSITIONS.map((p) => (
+                      <button type="button" key={p.key} onClick={() => togglePos(p.key)}
+                        style={{ ...styles.posChip, ...(posSel.includes(p.key) ? { background: POS_COLOR[p.key], color: "#fff", borderColor: POS_COLOR[p.key] } : {}) }}
+                        title={p.full}>
+                        {p.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <label style={styles.label}>
+                  実力レベル：{SKILL_LABELS[skill]}
+                  <input type="range" min={1} max={5} value={skill} onChange={(e) => setSkill(Number(e.target.value))} style={{ width: "100%" }} />
+                  <div style={styles.starRow}>
+                    {[1, 2, 3, 4, 5].map((n) => (
+                      <span key={n} style={{ color: "#D9A441", fontSize: 15 }}>{n <= skill ? "★" : "☆"}</span>
+                    ))}
+                  </div>
+                </label>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button type="submit" style={styles.primaryBtn}>{editingId ? "✓ 更新する" : "＋ 名簿に追加"}</button>
+                  {editingId && <button type="button" onClick={resetForm} style={styles.ghostBtn}>× キャンセル</button>}
+                </div>
+              </form>
+            </section>
+
+            <section style={styles.card}>
+              <h2 style={styles.cardTitle}>登録済みの選手</h2>
+              {players.length === 0 ? (
+                <div style={styles.emptyState}>⚠️ まだ選手が登録されていません。左のフォームから追加してください。</div>
+              ) : (
+                <ul style={styles.playerList}>
+                  {players.map((p) => (
+                    <li key={p.id} style={styles.playerRow}>
+                      <div style={styles.playerRowLeft}>
+                        <div style={styles.playerName}>{p.name}</div>
+                        <div style={styles.playerMeta}>
+                          {p.positions.map((k) => (<span key={k} style={{ ...styles.miniTag, background: POS_COLOR[k] }}>{k}</span>))}
+                          <span style={styles.skillDots}>{"★".repeat(p.skill)}<span style={{ opacity: 0.25 }}>{"★".repeat(5 - p.skill)}</span></span>
+                        </div>
+                      </div>
+                      <div style={{ display: "flex", gap: 6 }}>
+                        <button style={styles.iconBtn} onClick={() => editPlayer(p)}>編集</button>
+                        <button style={{ ...styles.iconBtn, color: "#E4572E" }} onClick={() => deletePlayer(p.id)}>削除</button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          </div>
+        )}
+
+        {tab === "setup" && (
+          <div className="tb-two-col">
+            <section style={styles.card}>
+              <h2 style={styles.cardTitle}>試合の設定</h2>
+              <div style={styles.formGridTwo}>
+                <label style={styles.label}>
+                  本数（セッション数）
+                  <input type="number" min={1} style={styles.input} value={sessionCount} onChange={(e) => setSessionCount(Math.max(1, Number(e.target.value)))} />
+                </label>
+                <label style={styles.label}>
+                  1本の時間（分）
+                  <input type="number" min={1} style={styles.input} value={sessionMinutes} onChange={(e) => setSessionMinutes(Math.max(1, Number(e.target.value)))} />
+                </label>
+                <label style={styles.label}>
+                  人数制
+                  <select style={styles.input} value={teamSize} onChange={(e) => setTeamSize(Number(e.target.value))}>
+                    {TEAM_SIZES.map((n) => (<option key={n} value={n}>{n}人制（{n}vs{n}）</option>))}
+                  </select>
+                </label>
+                <label style={styles.label}>
+                  フォーメーション
+                  <select style={styles.input} value={formationKey} onChange={(e) => setFormationKey(e.target.value)}>
+                    {formationList.map((f) => (<option key={f.key} value={f.key}>{f.key}</option>))}
+                  </select>
+                </label>
+              </div>
+              <p style={styles.helperText}>
+                1本あたり{capacity}人（{teamSize}vs{teamSize}）が出場します。登録{players.length}人 × {sessionCount}本の編成で、1人あたり平均 約{derivedAvg.toFixed(1)}本 出場します。
+              </p>
+              <button style={{ ...styles.primaryBtn, width: "100%", justifyContent: "center" }} onClick={handleGenerate} disabled={players.length < 2 || shortage}>
+                🔀 チームを自動編成する
+              </button>
+              {shortage && <p style={styles.helperTextWarn}>この人数制には最低{capacity}人の登録が必要です（現在{players.length}人）。</p>}
+            </section>
+
+            {schedule && formation && (
+              <section style={styles.card}>
+                <div style={styles.sessionNav}>
+                  <button style={styles.navArrow} onClick={() => setActiveSession((i) => Math.max(0, i - 1))} disabled={activeSession === 0}>‹</button>
+                  <div style={styles.sessionLabel}>
+                    MATCH {activeSession + 1} / {schedule.sessions.length}
+                    <span style={styles.sessionSub}>{sessionMinutes}分・{formation.key}</span>
+                  </div>
+                  <button style={styles.navArrow} onClick={() => setActiveSession((i) => Math.min(schedule.sessions.length - 1, i + 1))} disabled={activeSession === schedule.sessions.length - 1}>›</button>
+                </div>
+
+                <PitchPanels session={schedule.sessions[activeSession]} formation={formation} />
+
+                <div style={styles.benchBox}>
+                  <div style={styles.benchTitle}>📋 休憩（この本は出場なし）</div>
+                  {schedule.sessions[activeSession].bench.length === 0 ? (
+                    <div style={styles.benchEmpty}>全員出場</div>
+                  ) : (
+                    <div style={styles.benchList}>
+                      {schedule.sessions[activeSession].bench.map((p) => (<span key={p.id} style={styles.benchChip}>{p.name}</span>))}
+                    </div>
+                  )}
+                </div>
+
+                <AppearanceSummary players={players} appearances={schedule.appearances} />
+              </section>
+            )}
+          </div>
+        )}
+      </main>
+      <footer style={styles.footer}>データはこの端末のブラウザ内にのみ保存されます（他の端末とは共有されません）</footer>
+    </div>
+  );
+}
+
+function PitchPanels({ session, formation }) {
+  return (
+    <div className="tb-pitch-wrap">
+      <TeamPitch label="TEAM A" color="#1D3557" rows={session.teamA} formation={formation} />
+      <div className="tb-vs-center" style={styles.vsCenter}><div style={styles.vsBadge}>VS</div></div>
+      <TeamPitch label="TEAM B" color="#E4572E" rows={session.teamB} formation={formation} />
+    </div>
+  );
+}
+
+function TeamPitch({ label, color, rows, formation }) {
+  return (
+    <div style={styles.teamCol}>
+      <div style={{ ...styles.teamHeader, background: color }}>
+        <span>{label} <span style={styles.formationTag}>{formation.key}</span></span>
+        <span style={styles.teamHeaderSkill}>平均実力 {avgSkill(rows).toFixed(1)}</span>
+      </div>
+      <div style={styles.pitch}>
+        <div style={styles.pitchCircle} />
+        <div style={styles.pitchCenterLine} />
+        {ROW_ORDER.map((rowKey) => (
+          <div key={rowKey} style={styles.pitchRow}>
+            {rows[rowKey].map((p) => (
+              <div key={p.id} style={{ ...styles.pitchToken, borderColor: POS_COLOR[rowKey] }}>
+                <span style={{ ...styles.pitchTokenPos, background: POS_COLOR[rowKey] }}>{rowKey}</span>
+                <span style={styles.pitchTokenName}>{p.name}</span>
+                <span style={styles.pitchTokenSkill}>{"★".repeat(p.skill)}<span style={{ opacity: 0.25 }}>{"★".repeat(5 - p.skill)}</span></span>
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function AppearanceSummary({ players, appearances }) {
+  const rows = [...players].sort((a, b) => appearances[b.id] - appearances[a.id]);
+  return (
+    <div style={styles.summaryBox}>
+      <div style={styles.benchTitle}>📋 全本を通した出場回数</div>
+      <div className="tb-scroll" style={styles.summaryScroll}>
+        {rows.map((p) => (<div key={p.id} style={styles.summaryChip}>{p.name} <b>{appearances[p.id]}</b></div>))}
+      </div>
+    </div>
+  );
+}
+
+const styles = {
+  page: { minHeight: "100%", background: "#F7F5EF", fontFamily: "'Inter', system-ui, sans-serif", color: "#14231C" },
+  loadingWrap: { minHeight: 200, display: "flex", alignItems: "center", justifyContent: "center", background: "#0B3D2E", color: "#EAF4EC", borderRadius: 12 },
+  header: { background: "#0B3D2E", color: "#EAF4EC", padding: "18px 20px 0" },
+  headerInner: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 },
+  brandRow: { display: "flex", alignItems: "center", gap: 10 },
+  brandBadge: { width: 34, height: 34, borderRadius: 8, background: "#D9A441", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 },
+  brandTitle: { fontFamily: "'Oswald', sans-serif", fontWeight: 600, letterSpacing: 1.5, fontSize: 18, lineHeight: 1 },
+  brandSub: { fontSize: 11, opacity: 0.7, marginTop: 3 },
+  saveNote: { fontSize: 11, opacity: 0.6, height: 14 },
+  tabRow: { display: "flex", gap: 4 },
+  tabBtn: { display: "flex", alignItems: "center", gap: 6, background: "transparent", border: "none", color: "#EAF4EC99", padding: "10px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer", borderBottom: "2px solid transparent" },
+  tabBtnActive: { color: "#EAF4EC", borderBottom: "2px solid #D9A441" },
+  main: { padding: 16 },
+  card: { background: "#fff", border: "1px solid #e7e3d8", borderRadius: 12, padding: 16 },
+  cardTitle: { fontFamily: "'Oswald', sans-serif", fontSize: 15, letterSpacing: 0.5, marginTop: 0, marginBottom: 12, color: "#0B3D2E" },
+  form: { display: "flex", flexDirection: "column", gap: 12 },
+  label: { display: "flex", flexDirection: "column", gap: 6, fontSize: 12.5, fontWeight: 600, color: "#3a3a3a" },
+  input: { border: "1px solid #ddd6c4", borderRadius: 8, padding: "9px 10px", fontSize: 14, fontFamily: "inherit", background: "#FBFAF6" },
+  chipRow: { display: "flex", gap: 6, marginTop: 2 },
+  posChip: { border: "1.5px solid #ddd6c4", background: "#fff", borderRadius: 8, padding: "6px 12px", fontSize: 13, fontWeight: 700, cursor: "pointer", color: "#444" },
+  starRow: { display: "flex", gap: 2, marginTop: 4 },
+  primaryBtn: { display: "flex", alignItems: "center", gap: 6, background: "#0B3D2E", color: "#fff", border: "none", borderRadius: 8, padding: "10px 16px", fontSize: 13.5, fontWeight: 700, cursor: "pointer" },
+  ghostBtn: { display: "flex", alignItems: "center", gap: 6, background: "#fff", color: "#555", border: "1px solid #ddd6c4", borderRadius: 8, padding: "10px 16px", fontSize: 13.5, fontWeight: 600, cursor: "pointer" },
+  emptyState: { display: "flex", alignItems: "center", gap: 8, color: "#8a8a8a", fontSize: 13.5, background: "#FBFAF6", border: "1px dashed #ddd6c4", borderRadius: 8, padding: 16 },
+  playerList: { listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 8, maxHeight: 480, overflowY: "auto" },
+  playerRow: { display: "flex", alignItems: "center", justifyContent: "space-between", border: "1px solid #eee8d8", borderRadius: 9, padding: "9px 12px", background: "#FBFAF6" },
+  playerRowLeft: { display: "flex", flexDirection: "column", gap: 4 },
+  playerName: { fontSize: 14, fontWeight: 700 },
+  playerMeta: { display: "flex", alignItems: "center", gap: 6 },
+  miniTag: { color: "#fff", fontSize: 10.5, fontWeight: 700, borderRadius: 4, padding: "1px 6px" },
+  skillDots: { display: "flex", gap: 1, marginLeft: 4, fontSize: 10, color: "#D9A441" },
+  iconBtn: { border: "1px solid #ddd6c4", background: "#fff", borderRadius: 6, padding: "5px 8px", fontSize: 11.5, cursor: "pointer", color: "#555" },
+  formGridTwo: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 },
+  helperText: { fontSize: 12, color: "#666", lineHeight: 1.6, marginTop: 12 },
+  helperTextWarn: { fontSize: 12, color: "#E4572E", marginTop: 8 },
+  sessionNav: { display: "flex", alignItems: "center", justifyContent: "center", gap: 12, marginBottom: 14 },
+  navArrow: { border: "1px solid #ddd6c4", background: "#fff", borderRadius: "50%", width: 30, height: 30, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", fontSize: 16 },
+  sessionLabel: { fontFamily: "'Oswald', sans-serif", fontSize: 16, letterSpacing: 1, color: "#0B3D2E", display: "flex", flexDirection: "column", alignItems: "center", lineHeight: 1.2 },
+  sessionSub: { fontSize: 10.5, color: "#999", fontWeight: 400, letterSpacing: 0 },
+  vsCenter: { display: "flex", alignItems: "center", justifyContent: "center", minHeight: 60 },
+  vsBadge: { fontFamily: "'Oswald', sans-serif", fontWeight: 700, fontSize: 13, color: "#0B3D2E", border: "2px solid #D9A441", borderRadius: "50%", width: 36, height: 36, display: "flex", alignItems: "center", justifyContent: "center" },
+  teamCol: { border: "1px solid #eee8d8", borderRadius: 10, overflow: "hidden" },
+  teamHeader: { color: "#fff", padding: "8px 12px", fontFamily: "'Oswald', sans-serif", fontSize: 13, letterSpacing: 1, display: "flex", justifyContent: "space-between", alignItems: "center" },
+  formationTag: { fontSize: 10.5, fontWeight: 400, opacity: 0.85, marginLeft: 6, letterSpacing: 0 },
+  teamHeaderSkill: { fontSize: 10.5, fontWeight: 400, letterSpacing: 0, opacity: 0.9 },
+  pitch: { position: "relative", background: "linear-gradient(180deg, #1B5E3F 0%, #17553A 50%, #1B5E3F 100%)", padding: "14px 10px", display: "flex", flexDirection: "column", gap: 10 },
+  pitchCircle: { position: "absolute", left: "50%", top: "50%", width: 70, height: 70, border: "1.5px solid #ffffff33", borderRadius: "50%", transform: "translate(-50%,-50%)", pointerEvents: "none" },
+  pitchCenterLine: { position: "absolute", left: 0, right: 0, top: "50%", height: 1.5, background: "#ffffff33", pointerEvents: "none" },
+  pitchRow: { display: "flex", justifyContent: "space-around", gap: 6, flexWrap: "wrap", position: "relative", zIndex: 1 },
+  pitchToken: { background: "#ffffffef", border: "2px solid", borderRadius: 8, padding: "4px 8px", display: "flex", alignItems: "center", gap: 5, fontSize: 11.5, minWidth: 0 },
+  pitchTokenPos: { color: "#fff", fontSize: 9, fontWeight: 700, borderRadius: 3, padding: "1px 4px" },
+  pitchTokenName: { fontWeight: 700, whiteSpace: "nowrap" },
+  pitchTokenSkill: { fontSize: 8.5, color: "#D9A441", letterSpacing: 0.5 },
+  benchBox: { marginTop: 14, background: "#FBFAF6", border: "1px dashed #ddd6c4", borderRadius: 9, padding: 12 },
+  benchTitle: { display: "flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 700, color: "#666", marginBottom: 8 },
+  benchEmpty: { fontSize: 12, color: "#999" },
+  benchList: { display: "flex", flexWrap: "wrap", gap: 6 },
+  benchChip: { fontSize: 12, background: "#fff", border: "1px solid #ddd6c4", borderRadius: 6, padding: "3px 9px" },
+  summaryBox: { marginTop: 12, padding: 12, background: "#FBFAF6", border: "1px solid #eee8d8", borderRadius: 9 },
+  summaryScroll: { display: "flex", gap: 6, overflowX: "auto", paddingBottom: 4 },
+  summaryChip: { flexShrink: 0, fontSize: 11.5, background: "#fff", border: "1px solid #ddd6c4", borderRadius: 6, padding: "4px 9px", whiteSpace: "nowrap" },
+  footer: { textAlign: "center", fontSize: 11, color: "#999", padding: "10px 0 20px" },
+};
+
+document.getElementById("root").dataset.mounted = "1";
+ReactDOM.createRoot(document.getElementById("root")).render(<TeamBuilder />);
+</script>
+</body>
+</html>
